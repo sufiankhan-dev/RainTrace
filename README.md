@@ -2,7 +2,7 @@
 
 Open-source AI-assisted water and drainage inspection tool for property managers, housing societies, and maintenance contractors.
 
-> **Status:** foundation, Supabase client, the database schema, and hardened data-access policies. The version-controlled migrations define `properties`, `inspections`, and `findings` with Row Level Security, plus a private `findings` storage bucket and its policies. Authentication, AI inference, and the inspection features/UI are **not implemented yet**, so the running app has no per-user isolation until sign-in ships (see [Row Level Security](#row-level-security)).
+> **Status:** foundation, Supabase client, the database schema, hardened data-access policies, and a `/api/health` connection check. The version-controlled migrations define `properties`, `inspections`, and `findings` with Row Level Security, plus a private `findings` storage bucket and its policies; both migrations are applied to the linked hosted project and `/api/health` reports `ok` there. Authentication, AI inference, and the inspection features/UI are **not implemented yet**, so the running app has no per-user isolation until sign-in ships (see [Row Level Security](#row-level-security)).
 
 ## Stack
 
@@ -38,6 +38,7 @@ Notes:
 
 - Only `NEXT_PUBLIC_*` variables are inlined into the browser bundle. Never prefix the service-role key with `NEXT_PUBLIC_`.
 - The service-role key bypasses Row Level Security. It is read only in `lib/supabase/admin.ts`, which is guarded by `server-only` so it cannot be imported into Client Components.
+- `SUPABASE_SERVICE_ROLE_KEY` accepts either the legacy `service_role` JWT or a newer `sb_secret_…` key. The Management API (`GET /v1/projects/<ref>/api-keys`) returns the secret key redacted, so if you use one, copy it from the dashboard when it is created.
 - Real `.env.local` files are gitignored; only the placeholder `.env.example` is committed.
 
 ## Supabase client
@@ -147,9 +148,53 @@ re-run — it should fail — then `supabase db reset` to restore.
 Apply it to a hosted project:
 
 ```bash
+supabase login
 supabase link --project-ref <your-project-ref>
 supabase db push
 ```
+
+The linked hosted project (`lmxsufcyzfdhuvjjvgfp`) already has both migrations
+applied; `supabase migration list --linked` shows local and remote in sync and
+`supabase db push` reports "Remote database is up to date". Re-running `db push`
+after adding a migration applies only the new one.
+
+Up-to-date check without a stored database password:
+
+```bash
+supabase link --project-ref <your-project-ref> --yes   # uses the CLI login token
+supabase migration list --linked
+```
+
+If `supabase db push` cannot reach the database (no password available for a
+non-interactive shell), the same SQL can be applied through the Management API
+`POST /v1/projects/<ref>/database/query` with a personal access token, then
+recorded in `supabase_migrations.schema_migrations` (`version`, `name`) so the
+CLI still sees it as applied. See `prompts/supabase-connection-health.md`.
+
+## Health check
+
+`GET /api/health` is a read-only connection check (`app/api/health/route.ts`).
+It never writes data and never returns keys or row contents.
+
+```bash
+curl -i http://localhost:3000/api/health
+```
+
+| Check              | What it proves                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`           | Both public Supabase env vars are present.                                                                                                                 |
+| `restApi`          | The project is reachable and the publishable key is accepted.                                                                                              |
+| `schema`           | `properties`, `inspections`, `findings` exist in `public` and are correctly denied to the publishable key (`42501`). `PGRST205` means migrations not applied. |
+| `databaseQueries`  | Real `SELECT … LIMIT 1` queries on all three tables via the server-only service-role client. Skipped (with an explanatory message) when `SUPABASE_SERVICE_ROLE_KEY` is unset, because `anon` has no grants by design. |
+| `storage`          | The private `findings` bucket exists and is not public (service-role client).                                                                               |
+
+Each check reports `ok`, `degraded`, `error`, or `skipped` with an actionable
+message. The overall `status` is `error` > `degraded` > `ok` (`skipped` never
+affects it): HTTP **200** only when everything is `ok`, otherwise **503**.
+Against a project where the migrations have not been pushed yet it returns 503
+with `schema: degraded` naming the missing tables — run `supabase db push` and
+re-check. Against the linked hosted project (with `SUPABASE_SERVICE_ROLE_KEY`
+set) it returns **200** with all five checks `ok`.
 
 ## Scripts
 
