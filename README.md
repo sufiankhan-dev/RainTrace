@@ -2,7 +2,7 @@
 
 Open-source AI-assisted water and drainage inspection tool for property managers, housing societies, and maintenance contractors.
 
-> **Status:** foundation and Supabase client setup only. The Supabase client is wired up, but no database schema, AI inference, authentication, or inspection features are implemented yet.
+> **Status:** foundation, Supabase client, and the initial database schema. The version-controlled migration defines `properties`, `inspections`, and `findings` with Row Level Security. Authentication, AI inference, and the inspection features/UI are not implemented yet.
 
 ## Stack
 
@@ -51,6 +51,45 @@ Setup follows the official `@supabase/ssr` approach for the Next.js App Router:
 - `proxy.ts` — refreshes the auth session on each request (Next.js 16's `middleware`). No-ops when Supabase is unconfigured.
 
 Clients throw a descriptive, actionable error only when actually created without configuration, so a missing setup never breaks the build or existing pages.
+
+## Database schema
+
+The schema is version-controlled in `supabase/migrations/`. The initial migration
+(`20261015135508_initial_schema.sql`) defines three tables:
+
+- `properties` — a managed site.
+- `inspections` — an inspection event for one property (`on delete cascade`).
+- `findings` — a photo-backed observation within an inspection (`on delete cascade`).
+
+Design highlights:
+
+- UUID primary keys (`gen_random_uuid()`), `timestamptz` timestamps, foreign keys,
+  and CHECK constraints throughout.
+- AI output is kept separate from human-confirmed data: `category` and
+  `confirmed_summary` are the inspector-confirmed finding, while `ai_suggestion`
+  (jsonb) plus `ai_model_id`, `ai_prompt_version`, and `ai_analyzed_at` record the
+  model suggestion. Re-running AI never overwrites confirmed fields.
+- `observed_at` (when the condition was seen) is distinct from `created_at`
+  (when the row was recorded).
+- Row Level Security is enabled on all three tables. `authenticated` users can
+  only access rows they created; `anon` has no access; `service_role`
+  (server-only) bypasses RLS. Authentication is not implemented yet, so app
+  reads/writes must currently go through the server-only service-role client
+  (`lib/supabase/admin.ts`) until sign-in is added.
+
+Apply the schema locally (requires Docker):
+
+```bash
+supabase start       # start the local Supabase stack
+supabase db reset    # (re)apply all migrations + seed
+```
+
+Apply it to a hosted project:
+
+```bash
+supabase link --project-ref <your-project-ref>
+supabase db push
+```
 
 ## Scripts
 
